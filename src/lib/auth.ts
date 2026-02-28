@@ -68,7 +68,7 @@ const getApiErrorMessage = (value: unknown, fallback: string): string => {
 }
 
 const authRequest = async (
-  endpoint: "/login" | "/signup",
+  endpoint: "/auth/login" | "/auth/signup",
   credentials: AuthCredentials
 ): Promise<AuthSuccessResponse> => {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -96,10 +96,10 @@ const authRequest = async (
 }
 
 export const login = (credentials: AuthCredentials): Promise<AuthSuccessResponse> =>
-  authRequest("/login", credentials)
+  authRequest("/auth/login", credentials)
 
 export const signup = (credentials: AuthCredentials): Promise<AuthSuccessResponse> =>
-  authRequest("/signup", credentials)
+  authRequest("/auth/signup", credentials)
 
 const getAuthHeaders = (token?: string): HeadersInit => {
   if (!token) {

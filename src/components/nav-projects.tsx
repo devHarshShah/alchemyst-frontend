@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { MessageSquareText } from "lucide-react"
 import {
   SidebarGroup,
@@ -26,7 +27,7 @@ export function NavProjects({
         {history.map((item) => (
           <SidebarMenuItem key={item.id}>
             <SidebarMenuButton asChild>
-              <a href={item.url}>
+              <Link href={item.url}>
                 <MessageSquareText />
                 <div className="flex min-w-0 flex-col">
                   <span className="truncate">{item.title}</span>
@@ -34,7 +35,7 @@ export function NavProjects({
                     {item.updatedAt}
                   </span>
                 </div>
-              </a>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         ))}

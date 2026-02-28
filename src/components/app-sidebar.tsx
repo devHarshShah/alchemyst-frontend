@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { MessageCircle } from "lucide-react"
+import { MessageCircle, Plus } from "lucide-react"
 
 import { NavProjects } from "@/components/nav-projects"
 import { NavUser } from "@/components/nav-user"
@@ -9,6 +9,7 @@ import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarGroup,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -27,9 +28,17 @@ export interface SidebarHistoryItem {
 interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
   user: AuthUser | null
   history: SidebarHistoryItem[]
+  onNewChat: () => void
+  isStartingChat: boolean
 }
 
-export function AppSidebar({ user, history, ...props }: AppSidebarProps) {
+export function AppSidebar({
+  user,
+  history,
+  onNewChat,
+  isStartingChat,
+  ...props
+}: AppSidebarProps) {
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
@@ -48,6 +57,16 @@ export function AppSidebar({ user, history, ...props }: AppSidebarProps) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
+        <SidebarGroup className="px-2">
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={onNewChat} disabled={isStartingChat}>
+                <Plus />
+                <span>{isStartingChat ? "Starting..." : "New chat"}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
         <NavProjects history={history} />
       </SidebarContent>
       <SidebarFooter>
