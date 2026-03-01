@@ -1,4 +1,10 @@
 import { SignupForm } from "@/components/signup-form"
+import type { Metadata } from "next"
+
+export const metadata: Metadata = {
+  title: "Sign Up",
+  description: "Create a new Alchemyst account.",
+}
 
 export default function SignupPage() {
   return (
