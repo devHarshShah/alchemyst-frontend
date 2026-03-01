@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useRef } from "react"
 import { Loader2 } from "lucide-react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
@@ -131,7 +133,11 @@ export function ChatCenter({
               <span className="uppercase">{message.role}</span>
               <span>{formatTimestamp(message.timestamp)}</span>
             </div>
-            <p className="whitespace-pre-wrap text-sm">{message.text}</p>
+            <div className="text-sm leading-relaxed [&_a]:underline [&_code]:rounded [&_code]:bg-background/60 [&_code]:px-1 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-background/60 [&_pre]:p-2">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {message.text}
+              </ReactMarkdown>
+            </div>
             {message.interrupted ? (
               <p className="mt-1 text-[11px] font-medium text-amber-600">
                 Interrupted
