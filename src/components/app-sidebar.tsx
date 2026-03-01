@@ -30,6 +30,7 @@ interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
   history: SidebarHistoryItem[]
   onNewChat: () => void
   isStartingChat: boolean
+  onLogout: () => void
 }
 
 export function AppSidebar({
@@ -37,6 +38,7 @@ export function AppSidebar({
   history,
   onNewChat,
   isStartingChat,
+  onLogout,
   ...props
 }: AppSidebarProps) {
   return (
@@ -76,6 +78,7 @@ export function AppSidebar({
             email: user?.email ?? "Not signed in",
             avatar: "",
           }}
+          onLogout={onLogout}
         />
       </SidebarFooter>
       <SidebarRail />

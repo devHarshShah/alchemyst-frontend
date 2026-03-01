@@ -1,10 +1,5 @@
-import { Suspense } from "react"
-import DashboardClient from "./dashboard-client"
+import { redirect } from "next/navigation"
 
 export default function DashboardPage() {
-  return (
-    <Suspense fallback={<div className="h-svh w-full bg-background" />}>
-      <DashboardClient />
-    </Suspense>
-  )
+  redirect("/")
 }

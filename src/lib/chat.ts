@@ -43,6 +43,21 @@ export interface ChatMessage {
   interrupted: boolean
 }
 
+export interface ChatSessionLastMessage {
+  role: ChatMessageRole
+  content: string
+  timestamp: string
+  interrupted: boolean
+}
+
+export interface ChatSessionSummary {
+  sessionId: string
+  sessionEnded: boolean
+  messageCount: number
+  updatedAt: string
+  lastMessage: ChatSessionLastMessage | null
+}
+
 const pickString = (value: unknown, keys: string[]): string | null => {
   if (!isObject(value)) {
     return null
@@ -101,6 +116,63 @@ const parseRole = (value: unknown): ChatMessageRole => {
     return value
   }
   return "assistant"
+}
+
+const parseLastMessage = (value: unknown): ChatSessionLastMessage | null => {
+  if (!isObject(value)) {
+    return null
+  }
+
+  const content = pickString(value, ["content", "text", "message"])
+  const timestamp =
+    pickString(value, ["timestamp", "createdAt", "updatedAt"]) ??
+    new Date().toISOString()
+
+  if (!content) {
+    return null
+  }
+
+  return {
+    role: parseRole(value.role),
+    content,
+    timestamp,
+    interrupted: value.interrupted === true,
+  }
+}
+
+const parseSessionSummary = (value: unknown): ChatSessionSummary | null => {
+  if (!isObject(value)) {
+    return null
+  }
+
+  const sessionId = pickString(value, ["sessionId"])
+  const updatedAt =
+    pickString(value, ["updatedAt", "timestamp", "createdAt"]) ??
+    new Date().toISOString()
+  const messageCount =
+    typeof value.messageCount === "number" ? value.messageCount : 0
+
+  if (!sessionId) {
+    return null
+  }
+
+  return {
+    sessionId,
+    sessionEnded: value.sessionEnded === true,
+    messageCount,
+    updatedAt,
+    lastMessage: parseLastMessage(value.lastMessage),
+  }
+}
+
+const parseSessionsResponse = (value: unknown): ChatSessionSummary[] => {
+  if (!isObject(value) || !isObject(value.data) || !Array.isArray(value.data.sessions)) {
+    return []
+  }
+
+  return value.data.sessions
+    .map((item) => parseSessionSummary(item))
+    .filter((item): item is ChatSessionSummary => item !== null)
 }
 
 const parseChatMessage = (value: unknown): ChatMessage | null => {
@@ -205,4 +277,22 @@ export const getChatHistory = async (
   }
 
   return parseHistoryResponse(payload)
+}
+
+export const getChatSessions = async (token?: string): Promise<ChatSessionSummary[]> => {
+  const response = await fetch(`${API_BASE_URL}/chat/sessions`, {
+    method: "GET",
+    headers: buildAuthHeaders(token),
+    credentials: "include",
+  })
+
+  const payload: unknown = await response.json().catch(() => null)
+
+  if (!response.ok) {
+    throw new Error(
+      getApiErrorMessage(payload, `Request failed with status ${response.status}`)
+    )
+  }
+
+  return parseSessionsResponse(payload)
 }

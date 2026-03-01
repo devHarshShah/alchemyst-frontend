@@ -37,7 +37,7 @@ export function LoginForm({
 
       toast.dismiss(loadingToastId)
       toast.success(response.message || "Logged in successfully")
-      router.push("/dashboard")
+      router.push("/")
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : "Unable to sign in right now"

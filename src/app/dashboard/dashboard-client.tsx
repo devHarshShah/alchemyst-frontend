@@ -19,17 +19,13 @@ import {
 } from "@/components/ui/sidebar"
 import { getCurrentUser, type AuthUser } from "@/lib/auth"
 import {
+  getChatSessions,
   getChatHistory,
   startChatSession,
   type ChatMessage,
   type ChatMessageRole,
+  type ChatSessionSummary,
 } from "@/lib/chat"
-
-interface PersistedChatHistory {
-  id: string
-  title: string
-  updatedAt: string
-}
 
 type SocketState = "open" | "closed" | "error"
 
@@ -67,12 +63,6 @@ const WS_RECONNECT_MAX_DELAY_MS = 15000
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null
 
-const isPersistedHistory = (value: unknown): value is PersistedChatHistory =>
-  isObject(value) &&
-  typeof value.id === "string" &&
-  typeof value.title === "string" &&
-  typeof value.updatedAt === "string"
-
 const getNowTimestamp = (): string => new Date().toISOString()
 
 const formatHistoryTimestamp = (timestamp: string): string => {
@@ -96,9 +86,18 @@ const toHistoryItem = (
 ): SidebarHistoryItem => ({
   id: sessionId,
   title,
-  url: `/dashboard?sessionId=${encodeURIComponent(sessionId)}`,
+  url: `/?sessionId=${encodeURIComponent(sessionId)}`,
   updatedAt: formatHistoryTimestamp(timestamp),
 })
+
+const sessionsToHistory = (sessions: ChatSessionSummary[]): SidebarHistoryItem[] =>
+  sessions.map((session) =>
+    toHistoryItem(
+      session.sessionId,
+      session.lastMessage?.content.slice(0, 40) || "New chat",
+      session.updatedAt
+    )
+  )
 
 const getWebSocketUrl = (token?: string): string => {
   const configuredBase =
@@ -210,42 +209,6 @@ const createMessage = (
   interrupted,
 })
 
-const loadHistory = (): SidebarHistoryItem[] => {
-  const raw = localStorage.getItem("chat_history")
-  if (!raw) {
-    return []
-  }
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return []
-  }
-
-  if (!Array.isArray(parsed)) {
-    return []
-  }
-
-  return parsed
-    .filter(isPersistedHistory)
-    .map((item) => ({
-      id: item.id,
-      title: item.title,
-      url: `/dashboard?sessionId=${encodeURIComponent(item.id)}`,
-      updatedAt: item.updatedAt,
-    }))
-}
-
-const persistHistory = (historyItems: SidebarHistoryItem[]): void => {
-  const serializable: PersistedChatHistory[] = historyItems.map((item) => ({
-    id: item.id,
-    title: item.title,
-    updatedAt: item.updatedAt,
-  }))
-  localStorage.setItem("chat_history", JSON.stringify(serializable))
-}
-
 export default function DashboardClient() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -263,6 +226,7 @@ export default function DashboardClient() {
   const [sessionEndReasonById, setSessionEndReasonById] = useState<
     Record<string, string>
   >({})
+  const [isAuthResolved, setIsAuthResolved] = useState(false)
 
   const socketRef = useRef<WebSocket | null>(null)
   const pendingJoinSessionIdRef = useRef<string | null>(null)
@@ -273,14 +237,10 @@ export default function DashboardClient() {
 
   const upsertHistoryItem = useCallback(
     (sessionId: string, title: string, timestamp: string): void => {
-      setHistory((previous) => {
-        const next = [
-          toHistoryItem(sessionId, title, timestamp),
-          ...previous.filter((item) => item.id !== sessionId),
-        ]
-        persistHistory(next)
-        return next
-      })
+      setHistory((previous) => [
+        toHistoryItem(sessionId, title, timestamp),
+        ...previous.filter((item) => item.id !== sessionId),
+      ])
     },
     []
   )
@@ -295,6 +255,36 @@ export default function DashboardClient() {
     const payload: JoinEventPayload = { type: "join", sessionId }
     socket.send(JSON.stringify(payload))
     pendingJoinSessionIdRef.current = null
+  }, [])
+
+  const onLogout = useCallback(() => {
+    localStorage.clear()
+
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+
+    reconnectAttemptRef.current = 0
+    socketRef.current?.close()
+    socketRef.current = null
+
+    setUser(null)
+    setHistory([])
+    setMessages([])
+    setInputValue("")
+    setIsStreaming(false)
+    setIsSendingMessage(false)
+    setSessionEndReasonById({})
+    setIsAuthResolved(false)
+
+    router.replace("/auth/login")
+    toast.success("Logged out")
+  }, [router])
+
+  const fetchSidebarSessions = useCallback(async (token: string): Promise<void> => {
+    const sessions = await getChatSessions(token)
+    setHistory(sessionsToHistory(sessions))
   }, [])
 
   const onNewChat = useCallback(async () => {
@@ -318,6 +308,7 @@ export default function DashboardClient() {
         if (!(sessionId in previous)) {
           return previous
         }
+
         const next = { ...previous }
         delete next[sessionId]
         return next
@@ -325,7 +316,7 @@ export default function DashboardClient() {
 
       upsertHistoryItem(sessionId, firstMessage.slice(0, 40) || "New chat", timestamp)
       sendJoinEvent(sessionId)
-      router.push(`/dashboard?sessionId=${encodeURIComponent(sessionId)}`)
+      router.push(`/?sessionId=${encodeURIComponent(sessionId)}`)
 
       setMessages(
         firstMessage.length > 0
@@ -359,7 +350,7 @@ export default function DashboardClient() {
       const timestamp = start.data.timestamp ?? getNowTimestamp()
 
       if (resolvedSessionId !== sessionId) {
-        router.replace(`/dashboard?sessionId=${encodeURIComponent(resolvedSessionId)}`)
+        router.replace(`/?sessionId=${encodeURIComponent(resolvedSessionId)}`)
       }
 
       if (greeting.length > 0) {
@@ -411,25 +402,37 @@ export default function DashboardClient() {
 
   useEffect(() => {
     const token = localStorage.getItem("auth_token") ?? undefined
+    if (!token) {
+      router.replace("/auth/login")
+      return
+    }
+
     getCurrentUser(token)
       .then((currentUser) => {
         setUser(currentUser)
         localStorage.setItem("auth_user", JSON.stringify(currentUser))
+        return fetchSidebarSessions(token)
+      })
+      .then(() => {
+        setIsAuthResolved(true)
       })
       .catch((error: unknown) => {
         const message =
           error instanceof Error ? error.message : "Unable to load user profile"
+        localStorage.removeItem("auth_token")
+        localStorage.removeItem("auth_user")
+        router.replace("/auth/login")
         toast.error(message)
       })
-  }, [])
+  }, [fetchSidebarSessions, router])
 
   useEffect(() => {
-    const frameId = window.requestAnimationFrame(() => {
-      setHistory(loadHistory())
-    })
+    if (!isAuthResolved || activeSessionId || history.length === 0) {
+      return
+    }
 
-    return () => window.cancelAnimationFrame(frameId)
-  }, [])
+    router.replace(`/?sessionId=${encodeURIComponent(history[0].id)}`)
+  }, [activeSessionId, history, isAuthResolved, router])
 
   useEffect(() => {
     const token = localStorage.getItem("auth_token") ?? undefined
@@ -610,6 +613,7 @@ export default function DashboardClient() {
         if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
+
         setSessionEndReasonById((previous) => {
           if (!(currentSessionId in previous)) {
             return previous
@@ -782,6 +786,10 @@ export default function DashboardClient() {
     activeSessionId ? sessionEndReasonById[activeSessionId] ?? null : null
   const isSessionEnded = activeSessionEndReason !== null
 
+  if (!isAuthResolved) {
+    return <div className="h-svh w-full bg-background" />
+  }
+
   return (
     <SidebarProvider>
       <AppSidebar
@@ -789,6 +797,7 @@ export default function DashboardClient() {
         history={history}
         onNewChat={onNewChat}
         isStartingChat={isStartingChat}
+        onLogout={onLogout}
       />
       <SidebarInset className="h-svh overflow-hidden">
         <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
