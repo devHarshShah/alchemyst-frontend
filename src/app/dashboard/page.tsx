@@ -61,6 +61,9 @@ interface WsIncomingMessage {
   messages?: unknown[]
 }
 
+const WS_RECONNECT_BASE_DELAY_MS = 1000
+const WS_RECONNECT_MAX_DELAY_MS = 15000
+
 const isPersistedHistory = (value: unknown): value is PersistedChatHistory =>
   typeof value === "object" &&
   value !== null &&
@@ -260,10 +263,16 @@ export default function Page() {
   const [isSendingMessage, setIsSendingMessage] = useState(false)
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
+  const [sessionEndReasonById, setSessionEndReasonById] = useState<
+    Record<string, string>
+  >({})
 
   const socketRef = useRef<WebSocket | null>(null)
   const pendingJoinSessionIdRef = useRef<string | null>(null)
   const streamingMessageIdRef = useRef<string | null>(null)
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const reconnectAttemptRef = useRef(0)
 
   const upsertHistoryItem = useCallback(
     (sessionId: string, title: string, timestamp: string): void => {
@@ -290,6 +299,10 @@ export default function Page() {
     socket.send(JSON.stringify(payload))
     pendingJoinSessionIdRef.current = null
   }, [])
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId
+  }, [activeSessionId])
 
   const bootstrapSession = useCallback(
     async (sessionId: string): Promise<void> => {
@@ -335,6 +348,15 @@ export default function Page() {
       const firstMessage = response.data.firstMessage?.trim() ?? ""
       const timestamp = response.data.timestamp ?? getNowTimestamp()
 
+      setSessionEndReasonById((previous) => {
+        if (!(sessionId in previous)) {
+          return previous
+        }
+        const next = { ...previous }
+        delete next[sessionId]
+        return next
+      })
+
       upsertHistoryItem(sessionId, firstMessage.slice(0, 40) || "New chat", timestamp)
       sendJoinEvent(sessionId)
       router.push(`/dashboard?sessionId=${encodeURIComponent(sessionId)}`)
@@ -364,6 +386,11 @@ export default function Page() {
       return
     }
 
+    if (sessionEndReasonById[activeSessionId]) {
+      toast.error("This session has ended. Start a new chat.")
+      return
+    }
+
     const text = inputValue.trim()
     if (text.length === 0) {
       return
@@ -383,7 +410,7 @@ export default function Page() {
     setInputValue("")
     setIsSendingMessage(true)
     upsertHistoryItem(activeSessionId, text.slice(0, 40), timestamp)
-  }, [activeSessionId, inputValue, upsertHistoryItem])
+  }, [activeSessionId, inputValue, sessionEndReasonById, upsertHistoryItem])
 
   useEffect(() => {
     const token = localStorage.getItem("auth_token") ?? undefined
@@ -412,57 +439,38 @@ export default function Page() {
       return
     }
 
-    let isCurrentConnection = true
-    const socket = new WebSocket(getWebSocketUrl(token))
-    socketRef.current = socket
+    let isDisposed = false
 
-    socket.onopen = () => {
-      if (!isCurrentConnection) {
-        return
-      }
-
-      setSocketState("open")
-      const initialSessionId = pendingJoinSessionIdRef.current ?? activeSessionId
-      if (initialSessionId) {
-        sendJoinEvent(initialSessionId)
+    const clearReconnectTimer = (): void => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
       }
     }
 
-    socket.onclose = () => {
-      if (!isCurrentConnection) {
+    const scheduleReconnect = (): void => {
+      if (isDisposed) {
         return
       }
-      setSocketState("closed")
-      setIsSendingMessage(false)
-      setIsStreaming(false)
+
+      const attempt = reconnectAttemptRef.current + 1
+      reconnectAttemptRef.current = attempt
+      const delay = Math.min(
+        WS_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
+        WS_RECONNECT_MAX_DELAY_MS
+      )
+
+      clearReconnectTimer()
+      reconnectTimerRef.current = window.setTimeout(() => {
+        connectSocket()
+      }, delay)
     }
 
-    socket.onerror = () => {
-      if (!isCurrentConnection) {
-        return
-      }
-      setSocketState("error")
-    }
-
-    socket.onmessage = (event: MessageEvent<string>) => {
-      if (!isCurrentConnection) {
-        return
-      }
-
-      let payload: unknown
-      try {
-        payload = JSON.parse(event.data)
-      } catch {
-        return
-      }
-
-      const message = parseWsMessage(payload)
-      if (!message) {
-        return
-      }
+    const handleWsMessage = (message: WsIncomingMessage): void => {
+      const currentSessionId = activeSessionIdRef.current
 
       if (message.type === "history") {
-        if (!activeSessionId || message.sessionId !== activeSessionId) {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
         setMessages(parseHistoryMessages(message.messages))
@@ -474,7 +482,7 @@ export default function Page() {
       }
 
       if (message.type === "assistant_stream_start") {
-        if (!activeSessionId || message.sessionId !== activeSessionId) {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
         setIsStreaming(true)
@@ -489,7 +497,7 @@ export default function Page() {
       }
 
       if (message.type === "assistant_stream_chunk") {
-        if (!activeSessionId || message.sessionId !== activeSessionId) {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
         const chunk = message.chunk ?? ""
@@ -506,7 +514,7 @@ export default function Page() {
       }
 
       if (message.type === "assistant_stream_end") {
-        if (!activeSessionId || message.sessionId !== activeSessionId) {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
         setIsStreaming(false)
@@ -524,7 +532,7 @@ export default function Page() {
       }
 
       if (message.type === "assistant_interrupted") {
-        if (!activeSessionId || message.sessionId !== activeSessionId) {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
         const draftId = streamingMessageIdRef.current
@@ -552,7 +560,7 @@ export default function Page() {
       }
 
       if (message.type === "assistant_message") {
-        if (!activeSessionId || message.sessionId !== activeSessionId) {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
         const text = message.text ?? ""
@@ -580,12 +588,12 @@ export default function Page() {
 
         setIsStreaming(false)
         setIsSendingMessage(false)
-        upsertHistoryItem(activeSessionId, text.slice(0, 40), timestamp)
+        upsertHistoryItem(currentSessionId, text.slice(0, 40), timestamp)
         return
       }
 
       if (message.type === "message_received") {
-        if (!activeSessionId || message.sessionId !== activeSessionId) {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
         setIsSendingMessage(true)
@@ -593,10 +601,41 @@ export default function Page() {
       }
 
       if (message.type === "joined") {
-        if (!activeSessionId || message.sessionId !== activeSessionId) {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
           return
         }
         setIsLoadingHistory(true)
+        return
+      }
+
+      if (message.type === "session_started") {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
+          return
+        }
+        setSessionEndReasonById((previous) => {
+          if (!(currentSessionId in previous)) {
+            return previous
+          }
+          const next = { ...previous }
+          delete next[currentSessionId]
+          return next
+        })
+        return
+      }
+
+      if (message.type === "session_ended") {
+        if (!currentSessionId || message.sessionId !== currentSessionId) {
+          return
+        }
+        const reason =
+          message.reason?.trim() || "Session ended due to inactivity."
+        setSessionEndReasonById((previous) => ({
+          ...previous,
+          [currentSessionId]: reason,
+        }))
+        setIsStreaming(false)
+        setIsSendingMessage(false)
+        toast.error(reason)
         return
       }
 
@@ -607,18 +646,90 @@ export default function Page() {
             ? `${reason} (${message.statusCode})`
             : reason
         toast.error(details)
+        if (currentSessionId && message.statusCode === 409) {
+          setSessionEndReasonById((previous) => ({
+            ...previous,
+            [currentSessionId]: reason,
+          }))
+        }
         setIsStreaming(false)
         setIsSendingMessage(false)
-        return
       }
     }
 
-    return () => {
-      isCurrentConnection = false
-      socketRef.current = null
-      socket.close()
+    const connectSocket = (): void => {
+      if (isDisposed) {
+        return
+      }
+
+      const socket = new WebSocket(getWebSocketUrl(token))
+      socketRef.current = socket
+
+      socket.onopen = () => {
+        if (isDisposed) {
+          return
+        }
+
+        clearReconnectTimer()
+        reconnectAttemptRef.current = 0
+        setSocketState("open")
+        const initialSessionId =
+          pendingJoinSessionIdRef.current ?? activeSessionIdRef.current
+        if (initialSessionId) {
+          sendJoinEvent(initialSessionId)
+        }
+      }
+
+      socket.onerror = () => {
+        if (isDisposed) {
+          return
+        }
+        setSocketState("error")
+      }
+
+      socket.onclose = () => {
+        if (isDisposed) {
+          return
+        }
+        socketRef.current = null
+        setSocketState("closed")
+        setIsSendingMessage(false)
+        setIsStreaming(false)
+        scheduleReconnect()
+      }
+
+      socket.onmessage = (event: MessageEvent<string>) => {
+        if (isDisposed) {
+          return
+        }
+
+        let payload: unknown
+        try {
+          payload = JSON.parse(event.data)
+        } catch {
+          return
+        }
+
+        const message = parseWsMessage(payload)
+        if (!message) {
+          return
+        }
+
+        handleWsMessage(message)
+      }
     }
-  }, [activeSessionId, sendJoinEvent, upsertHistoryItem])
+
+    connectSocket()
+
+    return () => {
+      isDisposed = true
+      clearReconnectTimer()
+      reconnectAttemptRef.current = 0
+      const socket = socketRef.current
+      socketRef.current = null
+      socket?.close()
+    }
+  }, [sendJoinEvent, upsertHistoryItem])
 
   useEffect(() => {
     if (socketState !== "open") {
@@ -670,6 +781,10 @@ export default function Page() {
     return "Realtime: closed"
   }, [socketState])
 
+  const activeSessionEndReason =
+    activeSessionId ? sessionEndReasonById[activeSessionId] ?? null : null
+  const isSessionEnded = activeSessionEndReason !== null
+
   return (
     <SidebarProvider>
       <AppSidebar
@@ -702,10 +817,13 @@ export default function Page() {
             inputValue={inputValue}
             onInputChange={setInputValue}
             onSubmit={onSendMessage}
+            onStartNewChat={onNewChat}
             isConnected={socketState === "open"}
             isStreaming={isStreaming}
             isLoadingHistory={isLoadingHistory}
             isSending={isSendingMessage}
+            isSessionEnded={isSessionEnded}
+            sessionEndReason={activeSessionEndReason}
           />
         </div>
       </SidebarInset>

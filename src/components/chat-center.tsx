@@ -13,10 +13,13 @@ interface ChatCenterProps {
   inputValue: string
   onInputChange: (value: string) => void
   onSubmit: () => void
+  onStartNewChat: () => void
   isConnected: boolean
   isStreaming: boolean
   isLoadingHistory: boolean
   isSending: boolean
+  isSessionEnded: boolean
+  sessionEndReason: string | null
 }
 
 const formatTimestamp = (value: string): string => {
@@ -37,10 +40,13 @@ export function ChatCenter({
   inputValue,
   onInputChange,
   onSubmit,
+  onStartNewChat,
   isConnected,
   isStreaming,
   isLoadingHistory,
   isSending,
+  isSessionEnded,
+  sessionEndReason,
 }: ChatCenterProps) {
   const scrollViewportRef = useRef<HTMLDivElement | null>(null)
 
@@ -89,6 +95,11 @@ export function ChatCenter({
             />
             {isStreaming ? "Assistant typing" : "Idle"}
           </span>
+          {isSessionEnded ? (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-700">
+              Session ended
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -140,17 +151,36 @@ export function ChatCenter({
         ) : null}
       </div>
 
+      {isSessionEnded ? (
+        <div className="border-t bg-amber-50 px-4 py-3">
+          <p className="text-sm font-medium text-amber-800">Session ended</p>
+          <p className="mt-1 text-xs text-amber-700">
+            {sessionEndReason ?? "This chat was ended due to inactivity."}
+          </p>
+          <Button className="mt-3" size="sm" onClick={onStartNewChat}>
+            Start new chat
+          </Button>
+        </div>
+      ) : null}
+
       <form onSubmit={submitForm} className="border-t bg-background p-4">
         <div className="flex gap-2">
           <Input
             value={inputValue}
             onChange={(event) => onInputChange(event.target.value)}
             placeholder={
-              sessionId ? "Type your message..." : "Create or select a chat first"
+              isSessionEnded
+                ? "Session ended. Start a new chat."
+                : sessionId
+                  ? "Type your message..."
+                  : "Create or select a chat first"
             }
-            disabled={!sessionId}
+            disabled={!sessionId || isSessionEnded}
           />
-          <Button type="submit" disabled={!sessionId || !inputValue.trim()}>
+          <Button
+            type="submit"
+            disabled={!sessionId || isSessionEnded || !inputValue.trim()}
+          >
             {isSending ? "Sending..." : "Send"}
           </Button>
         </div>
